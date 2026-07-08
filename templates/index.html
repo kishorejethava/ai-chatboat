@@ -15,8 +15,8 @@
             align-items: center;
         }
         .chat-container {
-            width: 450px;
-            height: 600px;
+            width: 480px;
+            height: 640px;
             background: #fff;
             border-radius: 12px;
             box-shadow: 0 2px 16px rgba(0,0,0,0.1);
@@ -59,11 +59,24 @@
             color: #333;
             border-bottom-left-radius: 4px;
         }
+        .bot-message .play-btn {
+            display: inline-block;
+            margin-top: 6px;
+            padding: 4px 10px;
+            background: #2c3e50;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .bot-message .play-btn:hover { background: #34495e; }
         .chat-input {
             display: flex;
             padding: 12px;
             border-top: 1px solid #e9ecef;
             gap: 8px;
+            align-items: center;
         }
         .chat-input input {
             flex: 1;
@@ -75,28 +88,44 @@
         }
         .chat-input input:focus { border-color: #2c3e50; }
         .chat-input button {
-            padding: 10px 20px;
+            padding: 10px 16px;
             background: #2c3e50;
             color: #fff;
             border: none;
             border-radius: 8px;
             font-size: 14px;
             cursor: pointer;
+            flex-shrink: 0;
         }
         .chat-input button:hover { background: #34495e; }
         .chat-input button:disabled { background: #95a5a6; cursor: not-allowed; }
+        .mic-btn { padding: 10px 12px !important; font-size: 18px !important; }
+        .mic-btn.recording {
+            background: #e74c3c !important;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
         .typing { font-style: italic; color: #999; }
+        .voice-label {
+            font-size: 11px;
+            color: #999;
+            margin-bottom: 2px;
+        }
     </style>
 </head>
 <body>
     <div class="chat-container">
         <div class="chat-header">Landon Hotel Assistant</div>
         <div class="chat-messages" id="messages">
-            <div class="message bot-message">Hello! I'm Mr. Landon, your hotel assistant. How can I help you?</div>
+            <div class="message bot-message">Hello! I'm Mr. Landon, your hotel assistant. How can I help you? You can type or use the mic to speak.</div>
         </div>
         <div class="chat-input">
             <input type="text" id="userInput" placeholder="Type your question..." autofocus>
             <button id="sendBtn" onclick="sendMessage()">Send</button>
+            <button id="micBtn" class="mic-btn" onclick="toggleRecording()">&#127908;</button>
         </div>
     </div>
 
@@ -104,6 +133,11 @@
         const messagesDiv = document.getElementById('messages');
         const userInput = document.getElementById('userInput');
         const sendBtn = document.getElementById('sendBtn');
+        const micBtn = document.getElementById('micBtn');
+
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
 
         userInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') sendMessage();
@@ -115,13 +149,8 @@
 
             addMessage(question, 'user-message');
             userInput.value = '';
-            sendBtn.disabled = true;
-
-            const typingDiv = document.createElement('div');
-            typingDiv.className = 'message bot-message typing';
-            typingDiv.textContent = 'Typing...';
-            messagesDiv.appendChild(typingDiv);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            setInputsDisabled(true);
+            const typingDiv = showTyping();
 
             try {
                 const res = await fetch('/chatbot', {
@@ -131,13 +160,99 @@
                 });
                 const data = await res.json();
                 typingDiv.remove();
-                addMessage(data.response, 'bot-message');
+                addBotMessage(data.response, data.audio);
             } catch {
                 typingDiv.remove();
                 addMessage('Sorry, something went wrong.', 'bot-message');
             }
 
-            sendBtn.disabled = false;
+            setInputsDisabled(false);
+            userInput.focus();
+        }
+
+        async function toggleRecording() {
+            if (isRecording) {
+                stopRecording();
+            } else {
+                await startRecording();
+            }
+        }
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (e) => {
+                    if (e.data.size > 0) audioChunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    stream.getTracks().forEach(track => track.stop());
+                    const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+                    await sendVoice(audioBlob);
+                };
+
+                mediaRecorder.start();
+                isRecording = true;
+                micBtn.classList.add('recording');
+                micBtn.title = 'Click to stop recording';
+            } catch (err) {
+                addMessage('Microphone access denied. Please allow microphone permission.', 'bot-message');
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+            }
+            isRecording = false;
+            micBtn.classList.remove('recording');
+            micBtn.title = 'Click to start recording';
+        }
+
+        async function sendVoice(audioBlob) {
+            setInputsDisabled(true);
+
+            const voiceLabel = document.createElement('div');
+            voiceLabel.className = 'voice-label';
+            voiceLabel.textContent = 'Voice message';
+
+            const userDiv = document.createElement('div');
+            userDiv.className = 'message user-message';
+            userDiv.appendChild(voiceLabel);
+            userDiv.appendChild(document.createTextNode('Sending voice...'));
+            messagesDiv.appendChild(userDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+            const typingDiv = showTyping();
+
+            try {
+                const formData = new FormData();
+                formData.append('audio', audioBlob, 'recording.webm');
+
+                const res = await fetch('/voice', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+
+                userDiv.textContent = '';
+                const label = document.createElement('div');
+                label.className = 'voice-label';
+                label.textContent = 'Voice message';
+                userDiv.appendChild(label);
+                userDiv.appendChild(document.createTextNode(data.transcript));
+
+                typingDiv.remove();
+                addBotMessage(data.response, data.audio);
+            } catch {
+                typingDiv.remove();
+                addMessage('Sorry, something went wrong with voice processing.', 'bot-message');
+            }
+
+            setInputsDisabled(false);
             userInput.focus();
         }
 
@@ -147,6 +262,53 @@
             div.textContent = text;
             messagesDiv.appendChild(div);
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function addBotMessage(text, audioBase64) {
+            const div = document.createElement('div');
+            div.className = 'message bot-message';
+            div.textContent = text;
+
+            if (audioBase64) {
+                const playBtn = document.createElement('button');
+                playBtn.className = 'play-btn';
+                playBtn.textContent = 'Play Audio';
+                playBtn.onclick = () => playAudio(audioBase64);
+                div.appendChild(document.createElement('br'));
+                div.appendChild(playBtn);
+                setTimeout(() => playAudio(audioBase64), 300);
+            }
+
+            messagesDiv.appendChild(div);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function playAudio(base64Audio) {
+            const byteChars = atob(base64Audio);
+            const byteArray = new Uint8Array(byteChars.length);
+            for (let i = 0; i < byteChars.length; i++) {
+                byteArray[i] = byteChars.charCodeAt(i);
+            }
+            const blob = new Blob([byteArray], { type: 'audio/wav' });
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+            audio.play();
+            audio.onended = () => URL.revokeObjectURL(url);
+        }
+
+        function showTyping() {
+            const typingDiv = document.createElement('div');
+            typingDiv.className = 'message bot-message typing';
+            typingDiv.textContent = 'Typing...';
+            messagesDiv.appendChild(typingDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            return typingDiv;
+        }
+
+        function setInputsDisabled(disabled) {
+            sendBtn.disabled = disabled;
+            micBtn.disabled = disabled;
+            userInput.disabled = disabled;
         }
     </script>
 </body>

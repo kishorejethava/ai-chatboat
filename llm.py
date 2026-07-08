@@ -2,13 +2,14 @@ from flask import Flask, render_template, request, jsonify
 from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from dotenv import load_dotenv
+import requests as http_requests
 import os
 
 load_dotenv()
 
 prompt = open('website_text.txt', 'r').read()
 hotel_assistant_template = prompt + """
-You are the hotel manager of Landon Hotel, named "Mr. Landon". Your expertise is exclusively in providing information and 
+You are the hotel manager of Landon Hotel, named "Mr. Landon". Your expertise is exclusively in providing information and
 advice about anything related to Landon Hotel. This includes any general Landon Hotel related queries.
 You do not provide informantion outside of this scope.
 If a question is not about Landon Hotel, response with, "I can't assist you with that, sorry!"
@@ -29,22 +30,98 @@ llm = ChatOpenAI(
 
 llm_chain = hotel_assistant_prompt_template | llm
 
+SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
+SARVAM_TTS_URL = "https://api.sarvam.ai/text-to-speech"
+SARVAM_STT_URL = "https://api.sarvam.ai/speech-to-text"
+
+
 def query_llm(question):
     response = llm_chain.invoke({'question': question})
     return response.content
 
+
+def text_to_speech(text, language="en-IN"):
+    headers = {
+        "api-subscription-key": SARVAM_API_KEY,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "text": text[:2500],
+        "target_language_code": language,
+        "speaker": "shubh",
+        "model": "bulbul:v3",
+        "speech_sample_rate": 24000,
+        "output_format": "wav"
+    }
+    response = http_requests.post(SARVAM_TTS_URL, json=payload, headers=headers)
+    response.raise_for_status()
+    return response.json()["audios"][0]
+
+
+def speech_to_text(audio_bytes, filename="audio.webm"):
+    headers = {
+        "api-subscription-key": SARVAM_API_KEY
+    }
+    files = {
+        "file": (filename, audio_bytes, "audio/webm")
+    }
+    data = {
+        "model": "saaras:v3",
+        "mode": "transcribe"
+    }
+    response = http_requests.post(SARVAM_STT_URL, headers=headers, files=files, data=data)
+    response.raise_for_status()
+    return response.json()["transcript"]
+
+
 app = Flask(__name__)
+
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
+
 @app.route("/chatbot", methods=["POST"])
 def chatbot():
     data = request.get_json()
     question = data["question"]
-    response = query_llm(question)
-    return jsonify({"response": response})
+    response_text = query_llm(question)
+
+    audio_base64 = None
+    try:
+        audio_base64 = text_to_speech(response_text)
+    except Exception:
+        pass
+
+    result = {"response": response_text}
+    if audio_base64:
+        result["audio"] = audio_base64
+    return jsonify(result)
+
+
+@app.route("/voice", methods=["POST"])
+def voice():
+    audio_file = request.files["audio"]
+    audio_bytes = audio_file.read()
+
+    transcript = speech_to_text(audio_bytes, audio_file.filename or "recording.webm")
+    response_text = query_llm(transcript)
+
+    audio_base64 = None
+    try:
+        audio_base64 = text_to_speech(response_text)
+    except Exception:
+        pass
+
+    result = {
+        "transcript": transcript,
+        "response": response_text,
+    }
+    if audio_base64:
+        result["audio"] = audio_base64
+    return jsonify(result)
+
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, port=5001)
